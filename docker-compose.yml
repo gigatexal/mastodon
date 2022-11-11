@@ -9,9 +9,11 @@ services:
     healthcheck:
       test: ['CMD', 'pg_isready', '-U', 'postgres']
     volumes:
-      - ./postgres14:/var/lib/postgresql/data
+      - db:/var/lib/postgresql/data
     environment:
       - 'POSTGRES_HOST_AUTH_METHOD=trust'
+    ports:
+      - 5432
 
   redis:
     restart: always
@@ -21,53 +23,84 @@ services:
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
     volumes:
-      - ./redis:/data
+      - redis:/data
 
-  # es:
-  #   restart: always
-  #   image: docker.elastic.co/elasticsearch/elasticsearch:7.17.4
-  #   environment:
-  #     - "ES_JAVA_OPTS=-Xms512m -Xmx512m -Des.enforce.bootstrap.checks=true"
-  #     - "xpack.license.self_generated.type=basic"
-  #     - "xpack.security.enabled=false"
-  #     - "xpack.watcher.enabled=false"
-  #     - "xpack.graph.enabled=false"
-  #     - "xpack.ml.enabled=false"
-  #     - "bootstrap.memory_lock=true"
-  #     - "cluster.name=es-mastodon"
-  #     - "discovery.type=single-node"
-  #     - "thread_pool.write.queue_size=1000"
-  #   networks:
-  #      - external_network
-  #      - internal_network
-  #   healthcheck:
-  #      test: ["CMD-SHELL", "curl --silent --fail localhost:9200/_cluster/health || exit 1"]
-  #   volumes:
-  #      - ./elasticsearch:/usr/share/elasticsearch/data
-  #   ulimits:
-  #     memlock:
-  #       soft: -1
-  #       hard: -1
-  #     nofile:
-  #       soft: 65536
-  #       hard: 65536
-  #   ports:
-  #     - '127.0.0.1:9200:9200'
+  es:
+      restart: always
+      image: docker.elastic.co/elasticsearch/elasticsearch:7.17.4
+      environment:
+        - "ES_JAVA_OPTS=-Xms512m -Xmx512m -Des.enforce.bootstrap.checks=true"
+        - "xpack.license.self_generated.type=basic"
+        - "xpack.security.enabled=false"
+        - "xpack.watcher.enabled=false"
+        - "xpack.graph.enabled=false"
+        - "xpack.ml.enabled=false"
+        - "bootstrap.memory_lock=true"
+        - "cluster.name=es-mastodon"
+        - "discovery.type=single-node"
+        - "thread_pool.write.queue_size=1000"
+      networks:
+         - external_network
+         - internal_network
+      healthcheck:
+         test: ["CMD-SHELL", "curl --silent --fail localhost:9200/_cluster/health || exit 1"]
+      volumes:
+         - esdata:/usr/share/elasticsearch/data
+      ulimits:
+        memlock:
+          soft: -1
+          hard: -1
+        nofile:
+          soft: 65536
+          hard: 65536
+      ports:
+        - '127.0.0.1:9200:9200'
+
+  ingress:
+    image: caddy:2.4.5-alpine
+    ports:
+      - 80:80
+      - 443:443
+        #command: caddy reverse-proxy --from https://127.0.0.1:443 --to http://web:3000
+    restart: always
+    volumes:
+      - caddy:/data
+      - .Caddyfile:/etc/caddy/Caddyfile
+    networks:
+      - external_network
+      - internal_network
+    depends_on:
+      - web
 
   web:
     build: .
     image: tootsuite/mastodon
     restart: always
-    env_file: .env.production
+    env_file: .env.test
     command: bash -c "rm -f /mastodon/tmp/pids/server.pid; bundle exec rails s -p 3000"
     networks:
-      - external_network
+      #  - external_network
       - internal_network
     healthcheck:
       # prettier-ignore
       test: ['CMD-SHELL', 'wget -q --spider --proxy=off localhost:3000/health || exit 1']
     ports:
-      - '127.0.0.1:3000:3000'
+      - 3000
+    depends_on:
+      - db
+      - redis
+      # - es
+    volumes:
+      - ./public/system:/mastodon/public/system
+
+  populate_db:
+    build: .
+    image: tootsuite/mastodon
+    restart: "no"
+    env_file: .env.test
+    command: bash -c "rm -f /mastodon/tmp/pids/server.pid; bundle exec rails db:setup"
+    networks:
+      - internal_network
     depends_on:
       - db
       - redis
@@ -79,7 +112,7 @@ services:
     build: .
     image: tootsuite/mastodon
     restart: always
-    env_file: .env.production
+    env_file: .env.test
     command: node ./streaming
     networks:
       - external_network
@@ -97,7 +130,7 @@ services:
     build: .
     image: tootsuite/mastodon
     restart: always
-    env_file: .env.production
+    env_file: .env.test
     command: bundle exec sidekiq
     depends_on:
       - db
@@ -130,4 +163,10 @@ services:
 networks:
   external_network:
   internal_network:
-    internal: true
+    #    internal: true
+
+volumes:
+  db:
+  redis:
+  caddy:
+  esdata:
